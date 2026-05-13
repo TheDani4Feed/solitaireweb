@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Пасьянс</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <section class="game" aria-label="Пасьянс Косынка">
+        <header class="topbar">
+          <div class="title-block">
+            <span class="eyebrow">Косынка</span>
+            <h1>Пасьянс</h1>
+          </div>
+          <div class="stats" aria-live="polite">
+            <div class="stat">
+              <span>Раздача</span>
+              <strong id="stageValue">1</strong>
+            </div>
+            <div class="stat score">
+              <span>Очки</span>
+              <strong id="scoreValue">0</strong>
+            </div>
+            <div class="stat">
+              <span>Ходы</span>
+              <strong id="movesValue">0</strong>
+            </div>
+            <div class="stat">
+              <span>Время</span>
+              <strong id="timeValue">00:00</strong>
+            </div>
+          </div>
+        </header>
+
+        <div class="play-area">
+          <div class="felt" id="felt">
+            <section class="top-row" aria-label="Колода и дома">
+              <div class="foundations" id="foundations" aria-label="Дома"></div>
+              <div class="deck-area" aria-label="Колода">
+                <div class="slot stock-slot" id="stockSlot" data-zone="stock" tabindex="0" role="button" aria-label="Колода"></div>
+                <div class="slot waste-slot" id="wasteSlot" data-zone="waste" tabindex="0" role="button" aria-label="Сброс"></div>
+              </div>
+            </section>
+            <section class="tableau" id="tableau" aria-label="Игровые столбцы"></section>
+            <button class="pause-screen" id="pauseScreen" type="button" hidden>
+              <strong>Пауза</strong>
+            </button>
+          </div>
+
+          <aside class="side-panel" aria-label="Панель игры">
+            <button class="panel-button" id="newGameButton" type="button">
+              <span class="button-icon">↻</span>
+              <span>Новая</span>
+            </button>
+            <button class="panel-button" id="pauseButton" type="button">
+              <span class="button-icon" id="pauseIcon">Ⅱ</span>
+              <span id="pauseText">Пауза</span>
+            </button>
+            <button class="panel-button" id="undoButton" type="button">
+              <span class="button-icon">↶</span>
+              <span>Отмена</span>
+            </button>
+            <button class="panel-button auto-button" id="autoCollectButton" type="button" hidden>
+              <span class="button-icon">A</span>
+              <span>Авто-сбор</span>
+            </button>
+            <button class="panel-button" id="hintButton" type="button">
+              <span class="button-icon">?</span>
+              <span>Подсказка</span>
+            </button>
+
+            <section class="history" aria-label="Последние завершенные игры">
+              <h2>Последние 5</h2>
+              <ol id="historyList"></ol>
+            </section>
+          </aside>
+        </div>
+      </section>
+    </main>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <dialog class="win-dialog" id="winDialog">
+      <form method="dialog">
+        <span class="dialog-kicker">Партия собрана</span>
+        <h2>Победа</h2>
+        <p>
+          Время: <strong id="winTime">00:00</strong>
+          <span>·</span>
+          Ходы: <strong id="winMoves">0</strong>
+        </p>
+        <menu>
+          <button id="dialogNewGame" value="new" type="submit">Новая раздача</button>
+          <button value="close" type="submit">Закрыть</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <script src="app.js"></script>
+  </body>
+</html>
