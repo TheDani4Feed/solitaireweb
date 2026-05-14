@@ -31,9 +31,11 @@ const dom = {
   historyList: document.querySelector("#historyList"),
   toast: document.querySelector("#toast"),
   winDialog: document.querySelector("#winDialog"),
+  lossDialog: document.querySelector("#lossDialog"),
   winTime: document.querySelector("#winTime"),
   winMoves: document.querySelector("#winMoves"),
   dialogNewGame: document.querySelector("#dialogNewGame"),
+  lossNewGame: document.querySelector("#lossNewGame"),
 };
 
 let state = null;
@@ -46,6 +48,8 @@ let hintTimer = 0;
 let autoCollecting = false;
 let audioContext = null;
 let keyboardFocusTarget = null;
+let keyboardHoverTarget = null;
+let lastBoardPointer = null;
 
 function buildDeck() {
   return SUITS.flatMap((suit) =>
@@ -87,6 +91,7 @@ function createInitialState() {
     elapsed: 0,
     paused: false,
     won: false,
+    lost: false,
     resultSaved: false,
     stock: deck,
     waste: [],
@@ -118,6 +123,9 @@ function startNewGame() {
   hintMarks = null;
   clearHintTimer();
   closeWinDialog();
+  closeLossDialog();
+  render();
+  checkNoMoves();
   render();
   showToast("Новая раздача");
 }
@@ -162,11 +170,11 @@ function renderStats() {
 function renderControls() {
   const autoReady = canAutoCollect();
   dom.newGameButton.disabled = autoCollecting;
-  dom.undoButton.disabled = undoStack.length === 0 || state.paused || autoCollecting;
-  dom.hintButton.disabled = state.paused || state.won || autoCollecting;
+  dom.undoButton.disabled = undoStack.length === 0 || state.paused || state.lost || autoCollecting;
+  dom.hintButton.disabled = state.paused || state.won || state.lost || autoCollecting;
   dom.autoCollectButton.hidden = !autoReady && !autoCollecting;
-  dom.autoCollectButton.disabled = state.paused || state.won || autoCollecting || !autoReady;
-  dom.pauseButton.disabled = state.won || autoCollecting;
+  dom.autoCollectButton.disabled = state.paused || state.won || state.lost || autoCollecting || !autoReady;
+  dom.pauseButton.disabled = state.won || state.lost || autoCollecting;
   dom.pauseIcon.textContent = state.paused ? "▶" : "Ⅱ";
   dom.pauseText.textContent = state.paused ? "Играть" : "Пауза";
   dom.pauseScreen.hidden = !state.paused;
@@ -681,6 +689,15 @@ function canPlaceOnTableau(card, targetPile) {
   return topCard.faceUp && topCard.color !== card.color && topCard.rank === card.rank + 1;
 }
 
+function canPlaceOnAnyTableau(card, excludedPile = null) {
+  return state.tableau.some((pile, pileIndex) => {
+    if (pileIndex === excludedPile) {
+      return false;
+    }
+    return canPlaceOnTableau(card, pile);
+  });
+}
+
 function getMovableCards(source) {
   if (!source || !source.zone) {
     return [];
@@ -706,7 +723,7 @@ function getMovableCards(source) {
 }
 
 function canSourceDrag(source) {
-  if (!source || state?.paused || state?.won || autoCollecting) {
+  if (!source || state?.paused || state?.won || state?.lost || autoCollecting) {
     return false;
   }
   return getMovableCards(source).length > 0;
@@ -731,37 +748,47 @@ function sourceFromElement(element) {
 }
 
 function rememberKeyboardFocus(element) {
-  const card = element.closest(".card");
-  const slot = element.closest(".slot, .tableau-pile");
+  const target = getKeyboardTargetFromElement(element);
+  if (target) {
+    keyboardFocusTarget = target;
+  }
+}
+
+function rememberKeyboardHover(element) {
+  keyboardHoverTarget = getKeyboardTargetFromElement(element);
+}
+
+function getKeyboardTargetFromElement(element) {
+  const card = element?.closest?.(".card");
+  const slot = element?.closest?.(".slot, .tableau-pile");
   const target = card || slot;
 
-  if (!target?.dataset.zone) {
-    return;
+  if (!target?.dataset.zone || !dom.felt.contains(target)) {
+    return null;
   }
 
-  const { zone, pile, suit, foundationSuit, tableauPile } = target.dataset;
+  const { zone, pile, index, suit, foundationSuit, tableauPile } = target.dataset;
 
   if (zone === "tableau") {
-    keyboardFocusTarget = {
+    return {
       zone,
       pile: Number(pile ?? tableauPile),
+      index: index === undefined ? undefined : Number(index),
     };
-    return;
   }
 
   if (zone === "foundation") {
-    keyboardFocusTarget = {
+    return {
       zone,
       suit: suit ?? foundationSuit,
     };
-    return;
   }
 
-  keyboardFocusTarget = { zone };
+  return { zone };
 }
 
 function restoreKeyboardFocus() {
-  if (!keyboardFocusTarget) {
+  if (!keyboardFocusTarget || state.lost) {
     return;
   }
 
@@ -774,6 +801,10 @@ function restoreKeyboardFocus() {
 }
 
 function getKeyboardFocusElement(target) {
+  if (!target) {
+    return null;
+  }
+
   if (target.zone === "stock") {
     return document.querySelector('.stock-slot .card[data-zone="stock"]') || dom.stockSlot;
   }
@@ -791,6 +822,13 @@ function getKeyboardFocusElement(target) {
 
   if (target.zone === "tableau") {
     const pile = document.querySelector(`.tableau-pile[data-tableau-pile="${target.pile}"]`);
+    if (target.index !== undefined) {
+      return (
+        pile?.querySelector(`.card[data-zone="tableau"][data-pile="${target.pile}"][data-index="${target.index}"]`) ||
+        pile?.querySelector(".card.face-up:last-of-type") ||
+        pile
+      );
+    }
     return pile?.querySelector(".card.face-up:last-of-type") || pile;
   }
 
@@ -858,7 +896,7 @@ function moveSourceToFoundation(source) {
 }
 
 function performMove(mutator, options = {}) {
-  if (state.paused || state.won || autoCollecting) {
+  if (state.paused || state.won || state.lost || autoCollecting) {
     return false;
   }
 
@@ -875,7 +913,9 @@ function performMove(mutator, options = {}) {
   hintMarks = null;
   clearHintTimer();
 
-  checkWin();
+  if (!checkWin()) {
+    checkNoMoves();
+  }
   render();
   animateCardChanges(beforeRects);
   playCardSound(options.sound || "move");
@@ -915,10 +955,12 @@ function undo() {
   state.elapsed = elapsed;
   state.paused = false;
   state.won = false;
+  state.lost = false;
   selectedSource = null;
   hintMarks = null;
   clearHintTimer();
   closeWinDialog();
+  closeLossDialog();
   render();
   animateCardChanges(beforeRects);
   playCardSound("undo");
@@ -926,7 +968,7 @@ function undo() {
 }
 
 function activateSource(source) {
-  if (!source || state.paused || state.won || autoCollecting) {
+  if (!source || state.paused || state.won || state.lost || autoCollecting) {
     return;
   }
 
@@ -978,7 +1020,7 @@ function tryMoveSelectedTo(targetSource) {
 }
 
 function activateSlot(element) {
-  if (state.paused || state.won || autoCollecting) {
+  if (state.paused || state.won || state.lost || autoCollecting) {
     return;
   }
 
@@ -1039,8 +1081,56 @@ function revealsHiddenTableauCard(source) {
   return Boolean(pile?.[source.index - 1] && !pile[source.index - 1].faceUp);
 }
 
+function hasProgressMoves() {
+  if (state.won || state.lost) {
+    return true;
+  }
+
+  for (let pileIndex = 0; pileIndex < state.tableau.length; pileIndex += 1) {
+    const pile = state.tableau[pileIndex];
+    for (let cardIndex = 0; cardIndex < pile.length; cardIndex += 1) {
+      const card = pile[cardIndex];
+      if (!card.faceUp) {
+        continue;
+      }
+
+      const movingCards = pile.slice(cardIndex);
+      if (movingCards.length === 1 && canPlaceOnFoundation(card)) {
+        return true;
+      }
+
+      if (canPlaceOnAnyTableau(movingCards[0], pileIndex)) {
+        return true;
+      }
+    }
+  }
+
+  const reachableDrawCards = [...state.stock, ...state.waste];
+  for (const card of reachableDrawCards) {
+    if (canPlaceOnFoundation(card) || canPlaceOnAnyTableau(card)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function checkNoMoves() {
+  if (state.won || state.lost || hasProgressMoves()) {
+    return false;
+  }
+
+  state.lost = true;
+  state.paused = false;
+  selectedSource = null;
+  hintMarks = null;
+  clearHintTimer();
+  openLossDialog();
+  return true;
+}
+
 function canAutoCollect() {
-  return !state.won && state.tableau.every((pile) => pile.every((card) => card.faceUp));
+  return !state.won && !state.lost && state.tableau.every((pile) => pile.every((card) => card.faceUp));
 }
 
 function getAutoCollectStep() {
@@ -1098,7 +1188,7 @@ function getAutoCollectStep() {
 }
 
 async function startAutoCollect() {
-  if (!canAutoCollect() || state.paused || state.won || autoCollecting) {
+  if (!canAutoCollect() || state.paused || state.won || state.lost || autoCollecting) {
     return;
   }
 
@@ -1140,12 +1230,14 @@ async function startAutoCollect() {
       drawStepsSinceFoundation += 1;
     }
 
-    checkWin();
+    if (!checkWin()) {
+      checkNoMoves();
+    }
     render();
     animateCardChanges(beforeRects);
     playCardSound(step.sound);
 
-    if (state.won) {
+    if (state.won || state.lost) {
       break;
     }
 
@@ -1169,13 +1261,14 @@ function wait(ms) {
 function checkWin() {
   const completed = SUITS.every((suit) => state.foundations[suit.id].length === 13);
   if (!completed || state.won) {
-    return;
+    return completed;
   }
 
   state.won = true;
   saveResult();
   renderHistory();
   openWinDialog();
+  return true;
 }
 
 function openWinDialog() {
@@ -1189,6 +1282,18 @@ function openWinDialog() {
 function closeWinDialog() {
   if (dom.winDialog.open) {
     dom.winDialog.close();
+  }
+}
+
+function openLossDialog() {
+  if (!dom.lossDialog.open) {
+    dom.lossDialog.showModal();
+  }
+}
+
+function closeLossDialog() {
+  if (dom.lossDialog.open) {
+    dom.lossDialog.close();
   }
 }
 
@@ -1267,7 +1372,7 @@ function findHint() {
 }
 
 function showHint() {
-  if (state.paused || state.won || autoCollecting) {
+  if (state.paused || state.won || state.lost || autoCollecting) {
     return;
   }
 
@@ -1275,6 +1380,7 @@ function showHint() {
   const hint = findHint();
   if (!hint) {
     hintMarks = null;
+    checkNoMoves();
     render();
     hideToast();
     bumpButton(dom.hintButton);
@@ -1356,7 +1462,7 @@ function bumpButton(button) {
 }
 
 function togglePause() {
-  if (state.won) {
+  if (state.won || state.lost) {
     return;
   }
   state.paused = !state.paused;
@@ -1367,20 +1473,7 @@ function togglePause() {
 }
 
 function handleBoardClick(event) {
-  if (event.detail > 0) {
-    keyboardFocusTarget = null;
-  }
-
-  const card = event.target.closest(".card");
-  if (card) {
-    activateSource(sourceFromElement(card));
-    return;
-  }
-
-  const slot = event.target.closest(".slot, .tableau-pile");
-  if (slot) {
-    activateSlot(slot);
-  }
+  activateBoardElement(event.target);
 }
 
 function handleBoardKeydown(event) {
@@ -1388,18 +1481,113 @@ function handleBoardKeydown(event) {
     return;
   }
 
-  const target = event.target.closest(".card, .slot, .tableau-pile");
+  const target = getKeyboardActivationElement(event.target);
   if (!target) {
     return;
   }
 
   event.preventDefault();
-  rememberKeyboardFocus(target);
-  target.click();
+  activateBoardElement(target);
+}
+
+function handleGlobalKeydown(event) {
+  if (event.defaultPrevented || !isActivationKey(event)) {
+    return;
+  }
+
+  const activeElement = document.activeElement;
+  const hoveredTarget = getKeyboardActivationElement(null);
+  if (hoveredTarget) {
+    event.preventDefault();
+    activateBoardElement(hoveredTarget);
+    return;
+  }
+
+  const activeBoardTarget = activeElement?.closest?.(".card, .slot, .tableau-pile");
+  if (activeBoardTarget && dom.felt.contains(activeBoardTarget)) {
+    event.preventDefault();
+    activateBoardElement(activeBoardTarget);
+    return;
+  }
+
+  const activeIsOutsideControl =
+    activeElement &&
+    activeElement !== document.body &&
+    activeElement !== document.documentElement &&
+    !dom.felt.contains(activeElement);
+
+  if (activeIsOutsideControl) {
+    return;
+  }
+
+  const rememberedTarget = getKeyboardFocusElement(keyboardFocusTarget);
+  if (!rememberedTarget || !dom.felt.contains(rememberedTarget)) {
+    return;
+  }
+
+  event.preventDefault();
+  activateBoardElement(rememberedTarget);
+}
+
+function getKeyboardActivationElement(fallbackElement) {
+  const hoveredElement = getBoardElementUnderPointer();
+  if (hoveredElement) {
+    rememberKeyboardHover(hoveredElement);
+    return hoveredElement;
+  }
+
+  const fallbackTarget = fallbackElement?.closest?.(".card, .slot, .tableau-pile");
+  if (fallbackTarget && dom.felt.contains(fallbackTarget)) {
+    return fallbackTarget;
+  }
+
+  return getKeyboardFocusElement(keyboardHoverTarget) || getKeyboardFocusElement(keyboardFocusTarget);
+}
+
+function getBoardElementUnderPointer() {
+  if (!lastBoardPointer) {
+    return null;
+  }
+
+  const element = document.elementFromPoint(lastBoardPointer.x, lastBoardPointer.y);
+  const target = element?.closest?.(".card, .slot, .tableau-pile");
+  return target && dom.felt.contains(target) ? target : null;
+}
+
+function handleBoardPointerMove(event) {
+  lastBoardPointer = {
+    x: event.clientX,
+    y: event.clientY,
+  };
+  const target = event.target.closest(".card, .slot, .tableau-pile");
+  keyboardHoverTarget = target && dom.felt.contains(target) ? getKeyboardTargetFromElement(target) : null;
+}
+
+function handleBoardPointerLeave() {
+  lastBoardPointer = null;
+  keyboardHoverTarget = null;
+}
+
+function activateBoardElement(element) {
+  const card = element.closest(".card");
+  if (card && dom.felt.contains(card)) {
+    rememberKeyboardFocus(card);
+    activateSource(sourceFromElement(card));
+    return true;
+  }
+
+  const slot = element.closest(".slot, .tableau-pile");
+  if (slot && dom.felt.contains(slot)) {
+    rememberKeyboardFocus(slot);
+    activateSlot(slot);
+    return true;
+  }
+
+  return false;
 }
 
 function isActivationKey(event) {
-  return event.key === "Enter" || event.key === " " || event.key === "Spacebar";
+  return event.key === "Enter" || event.key === " " || event.key === "Spacebar" || event.code === "Space";
 }
 
 function handleDragStart(event) {
@@ -1460,7 +1648,7 @@ function handleDrop(event) {
 }
 
 function tickTimer() {
-  if (!state || state.paused || state.won) {
+  if (!state || state.paused || state.won || state.lost) {
     return;
   }
   state.elapsed += 1;
@@ -1469,12 +1657,19 @@ function tickTimer() {
 
 dom.felt.addEventListener("click", handleBoardClick);
 dom.felt.addEventListener("keydown", handleBoardKeydown);
+dom.felt.addEventListener("pointermove", handleBoardPointerMove);
+dom.felt.addEventListener("pointerleave", handleBoardPointerLeave);
 dom.felt.addEventListener("dragstart", handleDragStart);
 dom.felt.addEventListener("dragend", handleDragEnd);
 dom.felt.addEventListener("dragover", handleDragOver);
 dom.felt.addEventListener("drop", handleDrop);
-document.addEventListener("pointerdown", () => {
-  keyboardFocusTarget = null;
+document.addEventListener("keydown", handleGlobalKeydown);
+document.addEventListener("pointerdown", (event) => {
+  if (!dom.felt.contains(event.target)) {
+    keyboardFocusTarget = null;
+    keyboardHoverTarget = null;
+    lastBoardPointer = null;
+  }
 });
 
 dom.newGameButton.addEventListener("click", startNewGame);
@@ -1492,6 +1687,16 @@ dom.winDialog.addEventListener("close", () => {
 
 dom.dialogNewGame.addEventListener("click", () => {
   dom.winDialog.returnValue = "new";
+});
+
+dom.lossDialog.addEventListener("close", () => {
+  if (dom.lossDialog.returnValue === "new") {
+    startNewGame();
+  }
+});
+
+dom.lossNewGame.addEventListener("click", () => {
+  dom.lossDialog.returnValue = "new";
 });
 
 window.setInterval(tickTimer, 1000);
