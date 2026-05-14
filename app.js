@@ -421,6 +421,7 @@ function animateCardChanges(beforeRects) {
     const wasRevealed = !before.faceUp && element.classList.contains("face-up");
 
     if (distance > 2) {
+      const originalZIndex = element.style.zIndex;
       const baseTransform = getComputedStyle(element).transform;
       const finalTransform = baseTransform === "none" ? "translate(0, 0)" : baseTransform;
       const startTransform =
@@ -446,7 +447,7 @@ function animateCardChanges(beforeRects) {
 
       animation.addEventListener("finish", () => {
         element.classList.remove("is-moving");
-        element.style.zIndex = "";
+        element.style.zIndex = originalZIndex;
       });
       movedCount += 1;
     } else if (wasRevealed) {
@@ -656,6 +657,17 @@ function canPlaceOnFoundation(card) {
     return card.rank === 1;
   }
   return pile[pile.length - 1].rank + 1 === card.rank;
+}
+
+function isSafeFoundationHint(card, revealsClosedCard = false) {
+  if (revealsClosedCard || card.rank <= 2) {
+    return true;
+  }
+
+  return SUITS.filter((suit) => suit.color !== card.color).every((suit) => {
+    const pile = state.foundations[suit.id];
+    return pile.length && pile[pile.length - 1].rank >= card.rank - 1;
+  });
 }
 
 function canPlaceOnTableau(card, targetPile) {
@@ -949,6 +961,15 @@ function findTableauTarget(source) {
   return null;
 }
 
+function revealsHiddenTableauCard(source) {
+  if (!source || source.zone !== "tableau" || source.index <= 0) {
+    return false;
+  }
+
+  const pile = state.tableau[source.pile];
+  return Boolean(pile?.[source.index - 1] && !pile[source.index - 1].faceUp);
+}
+
 function canAutoCollect() {
   return !state.won && state.tableau.every((pile) => pile.every((card) => card.faceUp));
 }
@@ -1108,7 +1129,7 @@ function findHint() {
   const wasteSource = { zone: "waste" };
   const wasteCards = getMovableCards(wasteSource);
   if (wasteCards.length) {
-    if (canPlaceOnFoundation(wasteCards[0])) {
+    if (canPlaceOnFoundation(wasteCards[0]) && isSafeFoundationHint(wasteCards[0])) {
       candidates.push({
         priority: 80,
         source: wasteSource,
@@ -1138,8 +1159,8 @@ function findHint() {
         return;
       }
 
-      const revealsClosedCard = cardIndex > 0 && !pile[cardIndex - 1].faceUp;
-      if (movingCards.length === 1 && canPlaceOnFoundation(card)) {
+      const revealsClosedCard = revealsHiddenTableauCard(source);
+      if (movingCards.length === 1 && canPlaceOnFoundation(card) && isSafeFoundationHint(card, revealsClosedCard)) {
         candidates.push({
           priority: revealsClosedCard ? 95 : 75,
           source,
@@ -1148,7 +1169,7 @@ function findHint() {
       }
 
       const targetPile = findTableauTarget(source);
-      if (targetPile !== null) {
+      if (targetPile !== null && revealsClosedCard) {
         candidates.push({
           priority: revealsClosedCard ? 90 : 40,
           source,
