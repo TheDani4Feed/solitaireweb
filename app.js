@@ -9,6 +9,8 @@ const RANKS = ["", "A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", 
 const RESULTS_KEY = "codex-solitaire-results";
 const DEAL_KEY = "codex-solitaire-deal";
 const TABLEAU_COUNT = 7;
+const DEAL_QUALITY_ATTEMPTS = 90;
+const DEAL_MIN_SCORE = 18;
 
 const dom = {
   stage: document.querySelector("#stageValue"),
@@ -72,7 +74,7 @@ function shuffle(cards) {
   return deck;
 }
 
-function createInitialState() {
+function dealShuffledState() {
   const deck = shuffle(buildDeck());
   const tableau = Array.from({ length: TABLEAU_COUNT }, () => []);
 
@@ -85,7 +87,7 @@ function createInitialState() {
   }
 
   return {
-    stage: nextDealNumber(),
+    stage: 0,
     score: 0,
     moves: 0,
     elapsed: 0,
@@ -103,6 +105,188 @@ function createInitialState() {
     },
     tableau,
   };
+}
+
+function createInitialState() {
+  let bestDeal = null;
+  let bestScore = -1;
+
+  for (let attempt = 0; attempt < DEAL_QUALITY_ATTEMPTS; attempt += 1) {
+    const candidate = dealShuffledState();
+    const score = scoreDealQuality(candidate);
+
+    if (score > bestScore) {
+      bestDeal = candidate;
+      bestScore = score;
+    }
+
+    if (score >= DEAL_MIN_SCORE) {
+      candidate.stage = nextDealNumber();
+      return candidate;
+    }
+  }
+
+  bestDeal.stage = nextDealNumber();
+  return bestDeal;
+}
+
+function scoreDealQuality(candidate) {
+  const previousState = state;
+  const simulation = JSON.parse(JSON.stringify(candidate));
+  state = simulation;
+
+  try {
+    let score = getInitialMobilityScore();
+    const seenStates = new Set();
+
+    for (let step = 0; step < 320; step += 1) {
+      const key = serializeDealState();
+      if (seenStates.has(key)) {
+        break;
+      }
+      seenStates.add(key);
+
+      const hiddenBefore = countHiddenTableauCards();
+      const foundationsBefore = countFoundationCards();
+      const move = findSimulationMove();
+
+      if (!move || !move.run()) {
+        break;
+      }
+
+      const hiddenOpened = hiddenBefore - countHiddenTableauCards();
+      const foundationsAdded = countFoundationCards() - foundationsBefore;
+      score += hiddenOpened * 5 + foundationsAdded * 2 + (move.kind === "draw" ? 0 : 1);
+
+      if (countFoundationCards() === 52) {
+        score += 100;
+        break;
+      }
+    }
+
+    return score;
+  } finally {
+    state = previousState;
+  }
+}
+
+function getInitialMobilityScore() {
+  let score = 0;
+  state.tableau.forEach((pile, pileIndex) => {
+    const topCard = pile[pile.length - 1];
+    if (!topCard) {
+      return;
+    }
+    if (canPlaceOnFoundation(topCard)) {
+      score += 3;
+    }
+    if (canPlaceOnAnyTableau(topCard, pileIndex)) {
+      score += 2;
+    }
+  });
+  return score;
+}
+
+function findSimulationMove() {
+  const moves = [];
+  const wasteCards = getMovableCards({ zone: "waste" });
+
+  if (wasteCards.length) {
+    if (canPlaceOnFoundation(wasteCards[0]) && isSafeFoundationHint(wasteCards[0])) {
+      moves.push({
+        priority: 75,
+        kind: "foundation",
+        run: () => moveSourceToFoundation({ zone: "waste" }),
+      });
+    }
+
+    const targetPile = findUsefulTableauTarget({ zone: "waste" });
+    if (targetPile !== null) {
+      moves.push({
+        priority: 70,
+        kind: "tableau",
+        run: () => moveSourceToTableau({ zone: "waste" }, targetPile),
+      });
+    }
+  }
+
+  state.tableau.forEach((pile, pileIndex) => {
+    pile.forEach((card, cardIndex) => {
+      if (!card.faceUp) {
+        return;
+      }
+
+      const source = { zone: "tableau", pile: pileIndex, index: cardIndex };
+      const movingCards = getMovableCards(source);
+      const revealsClosedCard = revealsHiddenTableauCard(source);
+
+      if (movingCards.length === 1 && canPlaceOnFoundation(card) && isSafeFoundationHint(card, revealsClosedCard)) {
+        moves.push({
+          priority: revealsClosedCard ? 100 : 62,
+          kind: "foundation",
+          run: () => moveSourceToFoundation(source),
+        });
+      }
+
+      const targetPile = findUsefulTableauTarget(source);
+      if (targetPile !== null) {
+        moves.push({
+          priority: revealsClosedCard ? 95 : 45,
+          kind: "tableau",
+          run: () => moveSourceToTableau(source, targetPile),
+        });
+      }
+    });
+  });
+
+  const drawHint = getDrawProgressHint();
+  if (drawHint) {
+    moves.push({
+      priority: 20,
+      kind: "draw",
+      run: runSimulationDraw,
+    });
+  }
+
+  moves.sort((a, b) => b.priority - a.priority);
+  return moves[0] || null;
+}
+
+function runSimulationDraw() {
+  if (state.stock.length) {
+    const card = state.stock.pop();
+    card.faceUp = true;
+    state.waste.push(card);
+    return true;
+  }
+
+  if (state.waste.length) {
+    state.stock = state.waste
+      .reverse()
+      .map((card) => ({ ...card, faceUp: false }));
+    state.waste = [];
+    return true;
+  }
+
+  return false;
+}
+
+function countHiddenTableauCards() {
+  return state.tableau.reduce((total, pile) => total + pile.filter((card) => !card.faceUp).length, 0);
+}
+
+function countFoundationCards() {
+  return SUITS.reduce((total, suit) => total + state.foundations[suit.id].length, 0);
+}
+
+function serializeDealState() {
+  const tableau = state.tableau
+    .map((pile) => pile.map((card) => `${card.id}${card.faceUp ? "u" : "d"}`).join(","))
+    .join("|");
+  const foundations = SUITS.map((suit) => state.foundations[suit.id].length).join(",");
+  const stock = state.stock.map((card) => card.id).join(",");
+  const waste = state.waste.map((card) => card.id).join(",");
+  return `${foundations}/${tableau}/${stock}/${waste}`;
 }
 
 function nextDealNumber() {
@@ -698,6 +882,65 @@ function canPlaceOnAnyTableau(card, excludedPile = null) {
   });
 }
 
+function findUsefulTableauTarget(source) {
+  const movingCards = getMovableCards(source);
+  if (!movingCards.length) {
+    return null;
+  }
+
+  for (let pileIndex = 0; pileIndex < state.tableau.length; pileIndex += 1) {
+    if (source.zone === "tableau" && source.pile === pileIndex) {
+      continue;
+    }
+
+    if (canPlaceOnTableau(movingCards[0], state.tableau[pileIndex]) && isUsefulTableauMove(source, pileIndex)) {
+      return pileIndex;
+    }
+  }
+
+  return null;
+}
+
+function isUsefulTableauMove(source, targetPileIndex) {
+  if (source.zone === "waste") {
+    return true;
+  }
+
+  if (source.zone !== "tableau") {
+    return false;
+  }
+
+  return revealsHiddenTableauCard(source);
+}
+
+function canDrawCardCreateProgress(card) {
+  return (
+    (canPlaceOnFoundation(card) && isSafeFoundationHint(card)) ||
+    state.tableau.some((pile) => canPlaceOnTableau(card, pile))
+  );
+}
+
+function getReachableDrawCards() {
+  return [...state.stock].reverse().concat([...state.waste].reverse());
+}
+
+function getDrawProgressHint() {
+  if (!state.stock.length && !state.waste.length) {
+    return null;
+  }
+
+  const reachableCard = getReachableDrawCards().find((card) => canDrawCardCreateProgress(card));
+  if (!reachableCard) {
+    return null;
+  }
+
+  return {
+    priority: 10,
+    source: state.stock.length ? { zone: "stock" } : { zone: "waste" },
+    target: { zone: "stock" },
+  };
+}
+
 function getMovableCards(source) {
   if (!source || !source.zone) {
     return [];
@@ -1086,6 +1329,11 @@ function hasProgressMoves() {
     return true;
   }
 
+  const wasteCards = getMovableCards({ zone: "waste" });
+  if (wasteCards.length && canDrawCardCreateProgress(wasteCards[0])) {
+    return true;
+  }
+
   for (let pileIndex = 0; pileIndex < state.tableau.length; pileIndex += 1) {
     const pile = state.tableau[pileIndex];
     for (let cardIndex = 0; cardIndex < pile.length; cardIndex += 1) {
@@ -1095,19 +1343,21 @@ function hasProgressMoves() {
       }
 
       const movingCards = pile.slice(cardIndex);
-      if (movingCards.length === 1 && canPlaceOnFoundation(card)) {
+      const source = { zone: "tableau", pile: pileIndex, index: cardIndex };
+      const revealsClosedCard = revealsHiddenTableauCard(source);
+
+      if (movingCards.length === 1 && canPlaceOnFoundation(card) && isSafeFoundationHint(card, revealsClosedCard)) {
         return true;
       }
 
-      if (canPlaceOnAnyTableau(movingCards[0], pileIndex)) {
+      if (findUsefulTableauTarget(source) !== null) {
         return true;
       }
     }
   }
 
-  const reachableDrawCards = [...state.stock, ...state.waste];
-  for (const card of reachableDrawCards) {
-    if (canPlaceOnFoundation(card) || canPlaceOnAnyTableau(card)) {
+  for (const card of getReachableDrawCards()) {
+    if (canDrawCardCreateProgress(card)) {
       return true;
     }
   }
@@ -1311,7 +1561,7 @@ function findHint() {
       });
     }
 
-    const pile = findTableauTarget(wasteSource);
+    const pile = findUsefulTableauTarget(wasteSource);
     if (pile !== null) {
       candidates.push({
         priority: 55,
@@ -1342,8 +1592,8 @@ function findHint() {
         });
       }
 
-      const targetPile = findTableauTarget(source);
-      if (targetPile !== null && revealsClosedCard) {
+      const targetPile = findUsefulTableauTarget(source);
+      if (targetPile !== null) {
         candidates.push({
           priority: revealsClosedCard ? 90 : 40,
           source,
@@ -1353,18 +1603,9 @@ function findHint() {
     });
   });
 
-  if (state.stock.length) {
-    candidates.push({
-      priority: 10,
-      source: { zone: "stock" },
-      target: { zone: "stock" },
-    });
-  } else if (state.waste.length) {
-    candidates.push({
-      priority: 8,
-      source: { zone: "waste" },
-      target: { zone: "stock" },
-    });
+  const drawHint = getDrawProgressHint();
+  if (drawHint) {
+    candidates.push(drawHint);
   }
 
   candidates.sort((a, b) => b.priority - a.priority);
