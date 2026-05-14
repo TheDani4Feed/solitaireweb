@@ -45,6 +45,7 @@ let toastTimer = 0;
 let hintTimer = 0;
 let autoCollecting = false;
 let audioContext = null;
+let keyboardFocusTarget = null;
 
 function buildDeck() {
   return SUITS.flatMap((suit) =>
@@ -148,6 +149,7 @@ function render() {
   renderTableau();
   renderHistory();
   renderControls();
+  restoreKeyboardFocus();
 }
 
 function renderStats() {
@@ -728,6 +730,73 @@ function sourceFromElement(element) {
   };
 }
 
+function rememberKeyboardFocus(element) {
+  const card = element.closest(".card");
+  const slot = element.closest(".slot, .tableau-pile");
+  const target = card || slot;
+
+  if (!target?.dataset.zone) {
+    return;
+  }
+
+  const { zone, pile, suit, foundationSuit, tableauPile } = target.dataset;
+
+  if (zone === "tableau") {
+    keyboardFocusTarget = {
+      zone,
+      pile: Number(pile ?? tableauPile),
+    };
+    return;
+  }
+
+  if (zone === "foundation") {
+    keyboardFocusTarget = {
+      zone,
+      suit: suit ?? foundationSuit,
+    };
+    return;
+  }
+
+  keyboardFocusTarget = { zone };
+}
+
+function restoreKeyboardFocus() {
+  if (!keyboardFocusTarget) {
+    return;
+  }
+
+  window.requestAnimationFrame(() => {
+    const target = getKeyboardFocusElement(keyboardFocusTarget);
+    if (target && document.contains(target)) {
+      target.focus({ preventScroll: true });
+    }
+  });
+}
+
+function getKeyboardFocusElement(target) {
+  if (target.zone === "stock") {
+    return document.querySelector('.stock-slot .card[data-zone="stock"]') || dom.stockSlot;
+  }
+
+  if (target.zone === "waste") {
+    return document.querySelector('.waste-slot .card[data-zone="waste"]') || dom.wasteSlot;
+  }
+
+  if (target.zone === "foundation") {
+    return (
+      document.querySelector(`.foundation-slot[data-foundation-suit="${target.suit}"] .card[data-zone="foundation"]`) ||
+      document.querySelector(`.foundation-slot[data-foundation-suit="${target.suit}"]`)
+    );
+  }
+
+  if (target.zone === "tableau") {
+    const pile = document.querySelector(`.tableau-pile[data-tableau-pile="${target.pile}"]`);
+    return pile?.querySelector(".card.face-up:last-of-type") || pile;
+  }
+
+  return null;
+}
+
 function removeFromSource(source) {
   if (source.zone === "tableau") {
     return state.tableau[source.pile].splice(source.index);
@@ -1298,6 +1367,10 @@ function togglePause() {
 }
 
 function handleBoardClick(event) {
+  if (event.detail > 0) {
+    keyboardFocusTarget = null;
+  }
+
   const card = event.target.closest(".card");
   if (card) {
     activateSource(sourceFromElement(card));
@@ -1311,7 +1384,7 @@ function handleBoardClick(event) {
 }
 
 function handleBoardKeydown(event) {
-  if (event.key !== "Enter") {
+  if (!isActivationKey(event)) {
     return;
   }
 
@@ -1321,7 +1394,12 @@ function handleBoardKeydown(event) {
   }
 
   event.preventDefault();
+  rememberKeyboardFocus(target);
   target.click();
+}
+
+function isActivationKey(event) {
+  return event.key === "Enter" || event.key === " " || event.key === "Spacebar";
 }
 
 function handleDragStart(event) {
@@ -1395,6 +1473,9 @@ dom.felt.addEventListener("dragstart", handleDragStart);
 dom.felt.addEventListener("dragend", handleDragEnd);
 dom.felt.addEventListener("dragover", handleDragOver);
 dom.felt.addEventListener("drop", handleDrop);
+document.addEventListener("pointerdown", () => {
+  keyboardFocusTarget = null;
+});
 
 dom.newGameButton.addEventListener("click", startNewGame);
 dom.pauseButton.addEventListener("click", togglePause);
